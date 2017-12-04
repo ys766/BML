@@ -5,7 +5,7 @@ import scipy
 class model():
     def __init__(self,
                  training_set_index,
-                 hyp = [1,1,1,1],
+                 hyp = [1,1,1,1,1],
                  directory = 'D:/DATA/'):
         """Load data into user feature, movie feature, training set and test set.
            training_set_index: choose from 1-5. Indicating which training set to load.
@@ -16,7 +16,7 @@ class model():
         self.movie_feature = self.__load_data__(directory + 'movie_feature.csv')[1:]
         self.indexed_training_set = np.array(self.__load_data__(directory + 'train_'+ str(training_set_index) + '.csv'),dtype = np.int32)
         self.indexed_testing_set = np.array(self.__load_data__(directory + 'test_' + str(training_set_index) + '.csv'),dtype = np.int32)
-        a1,b1,a2,b2 = hyp
+        a1,b1,a2,b2,*rest = hyp
         self.hyp = hyp
         self.Kuser = self.__kernel__(a1,b1,self.user_feature)
         self.Kmovie = self.__kernel__(a2,b2,self.movie_feature)
@@ -37,7 +37,7 @@ class model():
         # x:m x d
         # a,b hyperparameter
         m = x.shape[0]
-        return np.matmul(x,np.transpose(x))*a*a + np.ones([m,m])*b*b
+        return  np.eye(m)*a*a + np.matmul(x,np.transpose(x))*b*b
     
     def __distance_measure__(self):
         
@@ -66,15 +66,24 @@ class model():
             m = np.ceil(n*ratio).astype(int)
             self.indexed_inducing_set = self.indexed_training_set[np.random.choice(n,m,replace = False)]
 
+    def refresh_um_kernel(self):
+        a1,b1,a2,b2,*rest = self.hyp
+        self.Kuser = self.__kernel__(a1,b1,self.user_feature)
+        self.Kmovie = self.__kernel__(a2,b2,self.movie_feature)
+
     def build_Kuu(self):
         # hyp = [a_user,b_user,a_movie,b_movie]
         m = self.indexed_inducing_set.shape[0] # size of the inducing point set
-        self.Kuu = np.matrix(np.ndarray([m,m],dtype = np.float32))
+        self.Ku = np.matrix(np.ndarray([m,m],dtype = np.float32))
+        self.Km = np.matrix(np.ndarray([m,m],dtype = np.float32))
         for i in range(m):
             for j in range(m):
                 user_i,movie_i,*rest = self.indexed_inducing_set[i]
                 user_j,movie_j,*rest = self.indexed_inducing_set[j]
-                self.Kuu[i,j] = self.Kuser[user_i-1,user_j-1]*self.Kmovie[movie_i-1,movie_j-1]
+                self.Ku[i,j] = self.Kuser[user_i-1,user_j-1]
+                self.Km[i,j] = self.Kmovie[movie_i-1,movie_j-1]
+        self.Kuu = np.multiply(self.Ku,self.Km)
+                
     
             
     def build_sparse_W(self,pattern = 'train'):
@@ -89,7 +98,7 @@ class model():
         U = self.indexed_inducing_set
         n = len(X)
         m = len(U)
-        W = np.matrix(np.zeros([m,n]))
+        W = np.matrix(np.zeros([n,m]))
         for i in range(n):
             low_1,low_2,index_1,index_2 = [47,47,-1,-1]
             for j in range(m):
@@ -112,20 +121,45 @@ class model():
         elif pattern == 'test':
             self.testing_W = W
 
-    def Linear_Conjugate_Gradient(self):
-        #Given W and Kuu, return inv(WKuuWT)*y
-        self.alpha = scipy.sparse.linalg.cg(self.Kuu,self.indexed_inducing_set[:,2])
-        pass
+    def build_alpha(self):
+        #Given W and Kuu, return inv(WKuuWT + sigma**2*I)*y
+        sigma = self.hyp[4]
+        y = self.indexed_training_set[:,2]
+        self.y_mean = np.mean(y)
+        y = y - self.y_mean
+        y = y.reshape([-1,1])
+        sigma_square = sigma**2
+        self.alpha = y/sigma_square - (self.training_W/sigma_square) * (np.linalg.inv(np.linalg.inv(self.Kuu) + self.training_W.T*self.training_W/sigma_square) * (self.training_W.T*y/sigma_square))
 
-    def Approximate_log_determinant(self):
-        #Approximate the log|WKuuWT|
-        pass
 
     def predict(self):
-        self.mean = self.testing_W*self.Kuu*self.alpha
+        self.predict_mean = (self.testing_W*self.Kuu)*(self.training_W.T*self.alpha) + self.y_mean
+        m = np.array(self.predict_mean - self.indexed_testing_set[:,2])
+        return np.sqrt(np.mean(m**2))
+        
 
-    def optimize_hyp(self):
-        pass
+    def hyp_g(self):
+        hyp = self.hyp
+        m = self.Kuu.shape[0]
+        Kuu_inv = np.matrix(np.linalg.inv(self.Kuu))
+        y = np.matrix(self.indexed_inducing_set[:,2].reshape([-1,1]))
+        dkda1 = np.matrix(self.Km*2*hyp[0])
+        dkdb1 = np.matrix(np.multiply(self.Km,self.Ku-hyp[0]**2*np.eye(m))*2/hyp[1])
+        dkda2 = np.matrix(self.Km*2*hyp[2])
+        dkdb2 = np.matrix(np.multiply(self.Ku,self.Km-hyp[2]**2*np.eye(m))*2/hyp[3])
+        dkdsigma = np.matrix(np.eye(m))*2*hyp[4]
+        def dl(x):
+            return np.matrix.trace(Kuu_inv*x) - y.T*Kuu_inv*x*Kuu_inv*y
+        self.hyp_grad = np.squeeze(np.array([dl(dkda1),dl(dkdb1),dl(dkda2),dl(dkdb2),dl(dkdsigma)]))
+
+    def optimize_hyp(self,step = 0.0001,n = 1000):
+        for i in range(n):
+            self.hyp_g()
+            self.hyp -= step*self.hyp_grad
+            self.refresh_um_kernel()
+            self.build_Kuu()
+        
+        
         
         
                 
