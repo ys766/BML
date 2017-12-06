@@ -6,7 +6,7 @@ class model():
     def __init__(self,
                  training_set_index,
                  hyp = [1,1,1,1,1],
-                 directory = 'D:/DATA/'):
+                 directory = ''):
         """Load data into user feature, movie feature, training set and test set.
            training_set_index: choose from 1-5. Indicating which training set to load.
            user/movie feature dimension: (data size) X (feature number)
@@ -158,10 +158,7 @@ class model():
             self.hyp -= step*self.hyp_grad
             self.refresh_um_kernel()
             self.build_Kuu()
-        
-        
-        
-        
+
                 
                     
                     
